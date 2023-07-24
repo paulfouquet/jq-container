@@ -1,0 +1,74 @@
+name: Build and Publish Containers
+on:
+  workflow_call:
+  push:
+    branches:
+      - master
+jobs:
+  build-containers:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    env:
+      AWS_CI_ROLE: ${{ secrets.AWS_CI_ROLE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup GIT version
+        id: version
+        run: |
+          GIT_VERSION=$(git describe --tags --always --match 'v*')
+          GIT_VERSION_MAJOR=$(echo $GIT_VERSION | cut -d. -f1)
+          GIT_VERSION_MAJOR_MINOR=$(echo $GIT_VERSION | cut -d. -f1,2)
+          echo "version=${GIT_VERSION}" >> $GITHUB_OUTPUT
+          echo "version_major=${GIT_VERSION_MAJOR}" >> $GITHUB_OUTPUT
+          echo "version_major_minor=${GIT_VERSION_MAJOR_MINOR}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ github.repository }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Login to GitHub Container Registry
+        if: ${{(github.ref == 'refs/heads/master') && !(startsWith(github.event.head_commit.message, 'release:'))}}
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+     
+
+      - name: Setup docker tags
+        id: tags
+        uses: actions/github-script@v6
+        with:
+          result-encoding: string
+          script: |
+            const tags = [];
+            tags.push('ghcr.io/${{ github.repository }}:latest');
+            tags.push('ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}');
+            return tags.join(', ')
+
+      - name: Build and push container
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          tags: ${{ steps.tags.outputs.result }}
+          push: ${{(github.ref == 'refs/heads/master') && !(startsWith(github.event.head_commit.message, 'release:'))}}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_HASH=${{ github.sha }}
+            GIT_VERSION=${{ steps.version.outputs.version }} 
+            GITHUB_RUN_ID=${{ github.run_id}}
